@@ -1,6 +1,4 @@
-using System.Net;
 using System.Text.Json;
-using Amazon.Lambda.APIGatewayEvents;
 using Amazon.Lambda.Core;
 using Amazon.Lambda.RuntimeSupport;
 using Amazon.Lambda.Serialization.SystemTextJson;
@@ -18,107 +16,106 @@ public class Function
 
     static Function()
     {
-        var connectionString = Environment.GetEnvironmentVariable("MYSQL_CONNECTION_STRING") 
+        // Ler configurações direto do arquivo JSON
+        var appSettingsPath = Path.Combine(Directory.GetCurrentDirectory(), "appsettings.json");
+        var appSettingsJson = File.ReadAllText(appSettingsPath);
+        var appSettings = JsonSerializer.Deserialize<AppSettings>(appSettingsJson);
+
+        // Connection string vem de variável de ambiente
+        var connectionString = Environment.GetEnvironmentVariable("MYSQL_CONNECTION_STRING")
             ?? throw new InvalidOperationException("MYSQL_CONNECTION_STRING not configured");
-        
-        var jwtSecret = Environment.GetEnvironmentVariable("JWT_SECRET") 
-            ?? throw new InvalidOperationException("JWT_SECRET not configured");
-        
-        var jwtIssuer = Environment.GetEnvironmentVariable("JWT_ISSUER") ?? "ManaFoodIssuer";
-        var jwtAudience = Environment.GetEnvironmentVariable("JWT_AUDIENCE") ?? "ManaFoodAudience";
+
+        // JWT configs vêm do appsettings.json
+        var jwtSecret = appSettings?.Jwt?.SecretKey
+            ?? throw new InvalidOperationException("Jwt:SecretKey not configured");
+
+        var jwtIssuer = appSettings?.Jwt?.Issuer ?? "ManaFoodIssuer";
+        var jwtAudience = appSettings?.Jwt?.Audience ?? "ManaFoodAudience";
+        var expirationMinutes = appSettings?.Jwt?.ExpirationMinutes ?? 1440;
 
         _clientDao = new ClientDao(connectionString);
-        _jwtGenerator = new JwtGenerator(jwtSecret, jwtIssuer, jwtAudience);
+        _jwtGenerator = new JwtGenerator(jwtSecret, jwtIssuer, jwtAudience, expirationMinutes);
     }
 
-    public static async Task<APIGatewayHttpApiV2ProxyResponse> FunctionHandler(
-        APIGatewayHttpApiV2ProxyRequest request, 
-        ILambdaContext context)
+    public async Task<object> FunctionHandler(AuthRequest? request, ILambdaContext context)
     {
-        context.Logger.LogInformation($"Request: {request.RequestContext.Http.Method} {request.RawPath}");
-
-        if (!string.Equals(request.RequestContext.Http.Method, "POST", StringComparison.OrdinalIgnoreCase))
-        {
-            return CreateResponse(HttpStatusCode.MethodNotAllowed, new { error = "Only POST method is allowed" });
-        }
-
-        AuthRequest? authRequest = null;
-        if (!string.IsNullOrEmpty(request.Body))
-        {
-            try
-            {
-                authRequest = JsonSerializer.Deserialize<AuthRequest>(request.Body, new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                });
-            }
-            catch (JsonException ex)
-            {
-                context.Logger.LogError($"JSON parsing error: {ex.Message}");
-                return CreateResponse(HttpStatusCode.BadRequest, new { error = "Invalid JSON format" });
-            }
-        }
-
-        if (string.IsNullOrWhiteSpace(authRequest?.Cpf))
-        {
-            return CreateResponse(HttpStatusCode.BadRequest, new { error = "CPF is required" });
-        }
-
         try
         {
-            var client = await _clientDao.GetByCpfAsync(authRequest.Cpf);
-            
+            context.Logger.LogInformation($"Request received: {JsonSerializer.Serialize(request)}");
+
+            if (request?.Cpf == null || string.IsNullOrWhiteSpace(request.Cpf))
+            {
+                return new
+                {
+                    statusCode = 400,
+                    body = JsonSerializer.Serialize(new { message = "CPF is required" })
+                };
+            }
+
+            context.Logger.LogInformation($"Searching for CPF: {request.Cpf}");
+
+            var client = await _clientDao.GetByCpfAsync(request.Cpf);
+
             if (client == null)
             {
-                context.Logger.LogWarning($"Client not found for CPF: {authRequest.Cpf}");
-                return CreateResponse(HttpStatusCode.Unauthorized, new { error = "Client not found" });
+                return new
+                {
+                    statusCode = 404,
+                    body = JsonSerializer.Serialize(new { message = "Client not found" })
+                };
             }
 
             var (token, expiresIn) = _jwtGenerator.GenerateToken(client);
 
-            context.Logger.LogInformation($"Token generated successfully for CPF: {authRequest.Cpf}");
-
-            return CreateResponse(HttpStatusCode.OK, new
+            return new
             {
-                token,
-                expires_in = expiresIn,
-                client = new
+                statusCode = 200,
+                body = JsonSerializer.Serialize(new
                 {
-                    cpf = client.Cpf,
-                    name = client.Name,
-                    email = client.Email
-                }
-            });
+                    token,
+                    expiresIn,
+                    client = new
+                    {
+                        client.Id,
+                        client.Cpf,
+                        client.Name,
+                        client.Email,
+                        client.UserType
+                    }
+                })
+            };
         }
         catch (Exception ex)
         {
-            context.Logger.LogError($"Error processing request: {ex.Message}");
-            return CreateResponse(HttpStatusCode.InternalServerError, new { error = "Internal server error" });
+            context.Logger.LogError($"Error: {ex}");
+            return new
+            {
+                statusCode = 500,
+                body = JsonSerializer.Serialize(new { message = "Internal server error", error = ex.Message })
+            };
         }
     }
 
-    private static APIGatewayHttpApiV2ProxyResponse CreateResponse(HttpStatusCode statusCode, object body)
+    private static async Task Main()
     {
-        return new APIGatewayHttpApiV2ProxyResponse
-        {
-            StatusCode = (int)statusCode,
-            Body = JsonSerializer.Serialize(body),
-            Headers = new Dictionary<string, string>
-            {
-                { "Content-Type", "application/json" },
-                { "Access-Control-Allow-Origin", "*" },
-                { "Access-Control-Allow-Headers", "Content-Type" },
-                { "Access-Control-Allow-Methods", "POST, OPTIONS" }
-            }
-        };
-    }
-
-    public static async Task Main()
-    {
-        Func<APIGatewayHttpApiV2ProxyRequest, ILambdaContext, Task<APIGatewayHttpApiV2ProxyResponse>> handler = FunctionHandler;
-        await LambdaBootstrapBuilder
-            .Create(handler, new DefaultLambdaJsonSerializer())
+        await LambdaBootstrapBuilder.Create<AuthRequest, object>(
+            new Function().FunctionHandler, 
+            new DefaultLambdaJsonSerializer())
             .Build()
             .RunAsync();
     }
+}
+
+// Classes para deserializar o appsettings.json
+public class AppSettings
+{
+    public JwtSettings? Jwt { get; set; }
+}
+
+public class JwtSettings
+{
+    public string? SecretKey { get; set; }
+    public int ExpirationMinutes { get; set; }
+    public string? Issuer { get; set; }
+    public string? Audience { get; set; }
 }
