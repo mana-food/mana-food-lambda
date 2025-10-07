@@ -73,15 +73,7 @@ public class Function
                 body = JsonSerializer.Serialize(new
                 {
                     token,
-                    expiresIn,
-                    client = new
-                    {
-                        client.Id,
-                        client.Cpf,
-                        client.Name,
-                        client.Email,
-                        client.UserType
-                    }
+                    expiresIn
                 })
             };
         }
