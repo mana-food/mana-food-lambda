@@ -3,6 +3,7 @@ using Amazon.Lambda.Core;
 using Amazon.Lambda.RuntimeSupport;
 using Amazon.Lambda.Serialization.SystemTextJson;
 using ManaFood.AuthLambda.Models;
+using ManaFood.AuthLambda.Services;
 using ManaFood.Data;
 
 [assembly: LambdaSerializer(typeof(DefaultLambdaJsonSerializer))]
@@ -11,19 +12,19 @@ namespace ManaFood.AuthLambda;
 
 public class Function
 {
-    private static readonly ClientDao _clientDao;
+    private static readonly SecretsManagerService _secretsService;
     private static readonly JwtGenerator _jwtGenerator;
+    private static ClientDao? _clientDao;
 
     static Function()
     {
+        // Inicializar Secrets Manager
+        _secretsService = new SecretsManagerService();
+        
         // Ler configurações direto do arquivo JSON
         var appSettingsPath = Path.Combine(Directory.GetCurrentDirectory(), "appsettings.json");
         var appSettingsJson = File.ReadAllText(appSettingsPath);
         var appSettings = JsonSerializer.Deserialize<AppSettings>(appSettingsJson);
-
-        // Connection string vem de variável de ambiente
-        var connectionString = Environment.GetEnvironmentVariable("MYSQL_CONNECTION_STRING")
-            ?? throw new InvalidOperationException("MYSQL_CONNECTION_STRING not configured");
 
         // JWT configs vêm do appsettings.json
         var jwtSecret = appSettings?.Jwt?.SecretKey
@@ -33,7 +34,6 @@ public class Function
         var jwtAudience = appSettings?.Jwt?.Audience ?? "ManaFoodAudience";
         var expirationMinutes = appSettings?.Jwt?.ExpirationMinutes ?? 1440;
 
-        _clientDao = new ClientDao(connectionString);
         _jwtGenerator = new JwtGenerator(jwtSecret, jwtIssuer, jwtAudience, expirationMinutes);
     }
 
@@ -50,6 +50,19 @@ public class Function
                     statusCode = 400,
                     body = JsonSerializer.Serialize(new { message = "CPF is required" })
                 };
+            }
+
+            if (_clientDao == null)
+            {
+                var secretArn = Environment.GetEnvironmentVariable("AURORA_SECRET_ARN")
+                    ?? throw new InvalidOperationException("AURORA_SECRET_ARN not configured");
+                
+                context.Logger.LogInformation("Getting database credentials from Secrets Manager...");
+                var credentials = await _secretsService.GetDatabaseCredentialsAsync(secretArn);
+                var connectionString = credentials.ToConnectionString();
+                
+                _clientDao = new ClientDao(connectionString);
+                context.Logger.LogInformation("Database connection initialized");
             }
 
             context.Logger.LogInformation($"Searching for CPF: {request.Cpf}");
