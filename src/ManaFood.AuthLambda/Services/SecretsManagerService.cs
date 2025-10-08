@@ -1,6 +1,7 @@
 using Amazon.SecretsManager;
 using Amazon.SecretsManager.Model;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace ManaFood.AuthLambda.Services;
 
@@ -27,11 +28,11 @@ public class SecretsManagerService
             
             return new DatabaseCredentials
             {
-                Host = Environment.GetEnvironmentVariable("DATABASE_HOST") ?? throw new InvalidOperationException("DATABASE_HOST not configured"),
-                Port = int.Parse(Environment.GetEnvironmentVariable("DATABASE_PORT") ?? "3306"),
-                Database = Environment.GetEnvironmentVariable("DATABASE_NAME") ?? "manafooddb",
-                Username = secretData.Username,
-                Password = secretData.Password
+                Host = secretData.Host ?? throw new InvalidOperationException("Host not found in secret"),
+                Port = secretData.Port > 0 ? secretData.Port : 3306,
+                Database = secretData.DbClusterIdentifier ?? "manafooddb",
+                Username = secretData.Username ?? throw new InvalidOperationException("Username not found in secret"),
+                Password = secretData.Password ?? throw new InvalidOperationException("Password not found in secret")
             };
         }
         catch (Exception ex)
@@ -43,8 +44,20 @@ public class SecretsManagerService
 
 public class DatabaseSecret
 {
-    public string Username { get; set; } = string.Empty;
-    public string Password { get; set; } = string.Empty;
+    [JsonPropertyName("username")]
+    public string? Username { get; set; }
+    
+    [JsonPropertyName("password")]
+    public string? Password { get; set; }
+    
+    [JsonPropertyName("host")]
+    public string? Host { get; set; }
+    
+    [JsonPropertyName("port")]
+    public int Port { get; set; }
+    
+    [JsonPropertyName("dbClusterIdentifier")]
+    public string? DbClusterIdentifier { get; set; }
 }
 
 public class DatabaseCredentials
