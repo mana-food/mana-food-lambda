@@ -1,3 +1,4 @@
+
 # Mana Food Lambda
 
 Uma função AWS Lambda para autenticação de clientes via CPF, gerando tokens JWT para integração com a API Mana Food.
