@@ -43,7 +43,7 @@ public class AuthController : ControllerBase
                 return BadRequest(new { message = "CPF and Password are required" });
             }
 
-            var usersTable = Table.LoadTable(_dynamoDbClient, "Users");
+            var usersTable = Table.LoadTable(_dynamoDbClient, "mana-food-users");
 
             var search = usersTable.Query(new QueryOperationConfig
             {
