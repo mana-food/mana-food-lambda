@@ -1,3 +1,3 @@
 namespace ManaFood.AuthLambda.Models;
 
-public record AuthRequest(string? Cpf);
+public record AuthRequest(string? Cpf, string? Password);
