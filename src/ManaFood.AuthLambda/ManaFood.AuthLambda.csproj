@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AWSProjectType>Lambda</AWSProjectType>
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="AWSSDK.DynamoDBv2" Version="3.7.400.44" />
