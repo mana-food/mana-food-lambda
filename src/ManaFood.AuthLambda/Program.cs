@@ -22,7 +22,7 @@ builder.Services.AddSingleton<IAmazonDynamoDB>(_ =>
     return new AmazonDynamoDBClient(config);
 });
 
-// Auth Service
+builder.Services.AddSingleton<IUserService, UserService>();
 builder.Services.AddScoped<AuthService>();
 
 var app = builder.Build();
@@ -30,4 +30,4 @@ var app = builder.Build();
 app.UseRouting();
 app.MapControllers();
 
-app.Run();
+await app.RunAsync();

@@ -2,21 +2,19 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
-using Amazon.DynamoDBv2;
-using Amazon.DynamoDBv2.DocumentModel;
 using Microsoft.IdentityModel.Tokens;
 
 namespace ManaFood.AuthLambda.Services;
 
 public class AuthService
 {
-    private readonly IAmazonDynamoDB _dynamoDb;
+    private readonly IUserService _userService;
     private readonly string _jwtSecret;
     private readonly int _expirationMinutes;
 
-    public AuthService(IAmazonDynamoDB dynamoDb)
+    public AuthService(IUserService userService)
     {
-        _dynamoDb = dynamoDb;
+        _userService = userService;
         _jwtSecret = Environment.GetEnvironmentVariable("Jwt__SecretKey") 
             ?? throw new InvalidOperationException("Jwt__SecretKey not configured");
         _expirationMinutes = int.Parse(Environment.GetEnvironmentVariable("Jwt__ExpirationMinutes") ?? "60");
@@ -24,32 +22,15 @@ public class AuthService
 
     public async Task<object?> AuthenticateAsync(string cpf, string password)
     {
-        var table = Table.LoadTable(_dynamoDb, "mana-food-users");
-        var search = table.Query(new QueryOperationConfig
-        {
-            IndexName = "CpfIndex",
-            KeyExpression = new Expression
-            {
-                ExpressionStatement = "Cpf = :cpf",
-                ExpressionAttributeValues = new Dictionary<string, DynamoDBEntry>
-                {
-                    { ":cpf", cpf }
-                }
-            }
-        });
-
-        var documents = await search.GetNextSetAsync();
-        var userDoc = documents.FirstOrDefault();
+        var userDoc = await _userService.GetUserByCpfAsync(cpf);
 
         if (userDoc == null)
             return null;
 
-        // Verificar senha
         var storedPassword = userDoc["Password"]?.AsString();
         if (storedPassword != HashPassword(password))
             return null;
 
-        // Gerar token
         var userId = userDoc["Id"]?.AsString() ?? string.Empty;
         var userName = userDoc["Name"]?.AsString() ?? string.Empty;
         var userEmail = userDoc["Email"]?.AsString() ?? string.Empty;
@@ -97,7 +78,7 @@ public class AuthService
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
 
-    private static string HashPassword(string password)
+    public static string HashPassword(string password)
     {
         using var sha256 = SHA256.Create();
         var bytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(password));

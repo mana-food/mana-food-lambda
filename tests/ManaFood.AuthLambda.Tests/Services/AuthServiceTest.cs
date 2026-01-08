@@ -1,5 +1,5 @@
 using System.IdentityModel.Tokens.Jwt;
-using Amazon.DynamoDBv2;
+using Amazon.DynamoDBv2.DocumentModel;
 using FluentAssertions;
 using ManaFood.AuthLambda.Services;
 using Moq;
@@ -9,7 +9,8 @@ namespace ManaFood.AuthLambda.Tests.Services;
 
 public class AuthServiceTests : IDisposable
 {
-    private readonly Mock<IAmazonDynamoDB> _mockDynamoDb;
+    private readonly Mock<IUserService> _mockUserService;
+    private readonly AuthService _authService;
 
     public AuthServiceTests()
     {
@@ -18,7 +19,8 @@ public class AuthServiceTests : IDisposable
         Environment.SetEnvironmentVariable("Jwt__Issuer", "TestIssuer");
         Environment.SetEnvironmentVariable("Jwt__Audience", "TestAudience");
 
-        _mockDynamoDb = new Mock<IAmazonDynamoDB>();
+        _mockUserService = new Mock<IUserService>();
+        _authService = new AuthService(_mockUserService.Object);
     }
 
     [Fact]
@@ -28,7 +30,7 @@ public class AuthServiceTests : IDisposable
         Environment.SetEnvironmentVariable("Jwt__SecretKey", null);
 
         // Act
-        var act = () => new AuthService(_mockDynamoDb.Object);
+        var act = () => new AuthService(_mockUserService.Object);
 
         // Assert
         act.Should().Throw<InvalidOperationException>()
@@ -39,48 +41,171 @@ public class AuthServiceTests : IDisposable
     }
 
     [Fact]
-    public void Constructor_WithValidConfiguration_CreatesInstance()
+    public async Task AuthenticateAsync_WithValidCredentials_ReturnsTokenAndUserData()
     {
+        // Arrange
+        var cpf = "12345678900";
+        var password = "senha123";
+        var userDoc = CreateUserDocument(cpf, password, 1);
+
+        _mockUserService
+            .Setup(x => x.GetUserByCpfAsync(cpf))
+            .ReturnsAsync(userDoc);
+
         // Act
-        var authService = new AuthService(_mockDynamoDb.Object);
+        var result = await _authService.AuthenticateAsync(cpf, password);
 
         // Assert
-        authService.Should().NotBeNull();
+        result.Should().NotBeNull();
+        var resultDict = GetDynamicProperties(result!);
+        
+        resultDict.Should().ContainKey("token");
+        resultDict.Should().ContainKey("expiresIn");
+        resultDict.Should().ContainKey("user");
+        
+        resultDict["expiresIn"].Should().Be(3600);
+        
+        var token = resultDict["token"] as string;
+        token.Should().NotBeNullOrEmpty();
+        ValidateJwtToken(token!, "CUSTOMER");
+        
+        var user = GetDynamicProperties(resultDict["user"]!);
+        user["id"].Should().Be("user-123");
+        user["name"].Should().Be("João Silva");
+        user["email"].Should().Be("joao@test.com");
+        user["userType"].Should().Be(1);
     }
 
     [Fact]
-    public void Constructor_WithoutExpirationMinutes_UsesDefault60Minutes()
+    public async Task AuthenticateAsync_WithNonExistentUser_ReturnsNull()
     {
         // Arrange
-        Environment.SetEnvironmentVariable("Jwt__ExpirationMinutes", null);
+        var cpf = "99999999999";
+        var password = "senha123";
+
+        _mockUserService
+            .Setup(x => x.GetUserByCpfAsync(cpf))
+            .ReturnsAsync((Document?)null);
 
         // Act
-        var authService = new AuthService(_mockDynamoDb.Object);
+        var result = await _authService.AuthenticateAsync(cpf, password);
 
         // Assert
-        authService.Should().NotBeNull();
-        
-        // Restore
-        Environment.SetEnvironmentVariable("Jwt__ExpirationMinutes", "60");
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AuthenticateAsync_WithWrongPassword_ReturnsNull()
+    {
+        // Arrange
+        var cpf = "12345678900";
+        var correctPassword = "senhaCorreta";
+        var wrongPassword = "senhaErrada";
+        var userDoc = CreateUserDocument(cpf, correctPassword, 1);
+
+        _mockUserService
+            .Setup(x => x.GetUserByCpfAsync(cpf))
+            .ReturnsAsync(userDoc);
+
+        // Act
+        var result = await _authService.AuthenticateAsync(cpf, wrongPassword);
+
+        // Assert
+        result.Should().BeNull();
     }
 
     [Theory]
-    [InlineData("30")]
-    [InlineData("120")]
-    [InlineData("1440")]
-    public void Constructor_WithDifferentExpirationMinutes_AcceptsValue(string minutes)
+    [InlineData(0, "ADMIN")]
+    [InlineData(1, "CUSTOMER")]
+    [InlineData(2, "KITCHEN")]
+    [InlineData(3, "OPERATOR")]
+    [InlineData(4, "MANAGER")]
+    [InlineData(99, "CUSTOMER")]
+    public async Task AuthenticateAsync_WithDifferentUserTypes_ReturnsCorrectRole(int userType, string expectedRole)
     {
         // Arrange
-        Environment.SetEnvironmentVariable("Jwt__ExpirationMinutes", minutes);
+        var cpf = "12345678900";
+        var password = "senha123";
+        var userDoc = CreateUserDocument(cpf, password, userType);
+
+        _mockUserService
+            .Setup(x => x.GetUserByCpfAsync(cpf))
+            .ReturnsAsync(userDoc);
 
         // Act
-        var authService = new AuthService(_mockDynamoDb.Object);
+        var result = await _authService.AuthenticateAsync(cpf, password);
 
         // Assert
-        authService.Should().NotBeNull();
+        result.Should().NotBeNull();
+        var token = GetDynamicProperties(result!)["token"] as string;
+        ValidateJwtToken(token!, expectedRole);
+    }
+
+    [Fact]
+    public void HashPassword_WithValidPassword_ReturnsHash()
+    {
+        // Arrange
+        var password = "senha123";
+
+        // Act
+        var hash = AuthService.HashPassword(password);
+
+        // Assert
+        hash.Should().NotBeNullOrEmpty();
+        hash.Should().Be("D/wWFW3VVpKgz8a89f/IUNhlhzLCObzmIZO/rpV4dAw=");
+    }
+
+    [Fact]
+    public void HashPassword_WithSamePassword_ReturnsSameHash()
+    {
+        // Arrange
+        var password = "senha123";
+
+        // Act
+        var hash1 = AuthService.HashPassword(password);
+        var hash2 = AuthService.HashPassword(password);
+
+        // Assert
+        hash1.Should().Be(hash2);
+    }
+
+    private static Document CreateUserDocument(string cpf, string password, int userType)
+    {
+        var doc = new Document();
+        doc["Id"] = "user-123";
+        doc["Name"] = "João Silva";
+        doc["Email"] = "joao@test.com";
+        doc["Cpf"] = cpf;
+        doc["Password"] = AuthService.HashPassword(password);
+        doc["UserType"] = userType;
+        return doc;
+    }
+
+    private static void ValidateJwtToken(string token, string expectedRole)
+    {
+        var handler = new JwtSecurityTokenHandler();
+        handler.CanReadToken(token).Should().BeTrue();
         
-        // Restore
-        Environment.SetEnvironmentVariable("Jwt__ExpirationMinutes", "60");
+        var jwtToken = handler.ReadJwtToken(token);
+        jwtToken.Claims.Should().Contain(c => c.Type == "sub");
+        jwtToken.Claims.Should().Contain(c => c.Type == "name");
+        jwtToken.Claims.Should().Contain(c => c.Type == "email");
+        jwtToken.Claims.Should().Contain(c => c.Type == "cpf");
+        jwtToken.Claims.Should().Contain(c => c.Type == "jti");
+        
+        var roleClaim = jwtToken.Claims.FirstOrDefault(c => c.Type == "role");
+        roleClaim.Should().NotBeNull();
+        roleClaim!.Value.Should().Be(expectedRole);
+    }
+
+    private static Dictionary<string, object?> GetDynamicProperties(object obj)
+    {
+        var dict = new Dictionary<string, object?>();
+        foreach (var prop in obj.GetType().GetProperties())
+        {
+            dict[prop.Name] = prop.GetValue(obj);
+        }
+        return dict;
     }
 
     public void Dispose()
