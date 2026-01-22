@@ -1,22 +1,15 @@
-# Stage 1: Build
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 
-# Copiar todo o código fonte
-COPY . .
+COPY ["src/ManaFood.AuthLambda/ManaFood.AuthLambda.csproj", "ManaFood.AuthLambda/"]
+RUN dotnet restore "ManaFood.AuthLambda/ManaFood.AuthLambda.csproj"
 
-# Build e publicação
-RUN dotnet publish src/ManaFood.AuthLambda/ManaFood.AuthLambda.csproj \
-    -c Release \
-    -r linux-x64 \
-    --self-contained false \
-    -o /app/publish
+COPY src/ManaFood.AuthLambda/ ManaFood.AuthLambda/
+WORKDIR "/src/ManaFood.AuthLambda"
+RUN dotnet publish -c Release -o /app/publish
 
-# Stage 2: Runtime
-FROM public.ecr.aws/lambda/dotnet:9
-WORKDIR /var/task
-
-# Copiar apenas os binários publicados do stage anterior
+FROM mcr.microsoft.com/dotnet/aspnet:9.0
+WORKDIR /app
+EXPOSE 8080
 COPY --from=build /app/publish .
-
-CMD ["bootstrap::ManaFood.AuthLambda.Function::FunctionHandler"]
+ENTRYPOINT ["dotnet", "ManaFood.AuthLambda.dll"]
