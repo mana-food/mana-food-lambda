@@ -1,0 +1,44 @@
+name: "Etapa: Análise de Pushes"
+on:
+  push:
+    branches-ignore:
+      - main
+
+jobs:
+  # Steps: Build, Testes e verificação de cobertura de código
+  analise-de-pushes:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Configurar .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Restaurar dependências
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
+      
+      - name: Rodar Testes e Cobertura
+        run: |
+          dotnet test --configuration Release --no-build --verbosity normal \
+            --collect:"XPlat Code Coverage" \
+            --results-directory ./TestResults/
+      
+      - name: Listar arquivos de cobertura
+        run: |
+          echo "=== Coverage files generated ==="
+          find ./TestResults -name "coverage.cobertura.xml" -type f -exec ls -lh {} \;
+
+      - name: Upload cobertura de código
+        uses: actions/upload-artifact@v4
+        with:
+          name: cobertura-code-coverage
+          path: '**/coverage.cobertura.xml'
+          retention-days: 7
